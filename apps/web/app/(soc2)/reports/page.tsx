@@ -1,53 +1,61 @@
-import { listWeeklyReports } from "@/lib/soc2/reports/weekly";
+import Link from "next/link";
+import { sql } from "@vercel/postgres";
+
+type ReportRow = {
+  id: string;
+  score: number;
+  score_delta: number;
+  newly_deficient_count: number;
+  resolved_count: number;
+  readiness_weeks: number;
+  created_at: string;
+};
 
 export default async function ReportsPage(): Promise<JSX.Element> {
-  const organizationId = process.env.DEFAULT_ORGANIZATION_ID ?? "";
-  const reports = organizationId ? await listWeeklyReports(organizationId) : [];
-  const trend = reports.slice(0, 12).reverse().map((r) => r.score);
+  const reports = await sql<ReportRow>`
+    SELECT id, score, score_delta, newly_deficient_count, resolved_count, readiness_weeks, created_at
+    FROM soc2_gap_reports
+    ORDER BY created_at DESC
+    LIMIT 20
+  `;
 
   return (
     <main>
-      <h1>Weekly SOC 2 Gap Reports</h1>
-      <p>Trend-first view of your readiness score and what changed week over week.</p>
-
-      {reports.length === 0 ? (
-        <section className="empty">
-          <p>Your first weekly report lands Monday.</p>
-        </section>
+      <h1>Weekly SOC 2 reports</h1>
+      <p>Track score trend and what changed each Monday scan.</p>
+      {reports.rowCount === 0 ? (
+        <div className="empty">Your first weekly report lands Monday.</div>
       ) : (
-        <>
-          <section className="card">
-            <h2>Score Trend</h2>
-            <p className="muted">{trend.join(" · ")}</p>
-          </section>
-
-          <table>
-            <thead>
-              <tr>
-                <th>Week</th>
-                <th>Score</th>
-                <th>Delta</th>
-                <th>Newly deficient</th>
-                <th>Resolved</th>
-                <th>Readiness</th>
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Score</th>
+              <th>Delta</th>
+              <th>New deficient</th>
+              <th>Resolved</th>
+              <th>Readiness (weeks)</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {reports.rows.map((r) => (
+              <tr key={r.id}>
+                <td>{new Date(r.created_at).toLocaleDateString()}</td>
+                <td>{r.score}</td>
+                <td>{r.score_delta >= 0 ? `+${r.score_delta}` : r.score_delta}</td>
+                <td>{r.newly_deficient_count}</td>
+                <td>{r.resolved_count}</td>
+                <td>{r.readiness_weeks}</td>
+                <td>
+                  <Link href={`/reports/${r.id}`} className="btn secondary">
+                    View
+                  </Link>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {reports.map((report) => (
-                <tr key={report.id}>
-                  <td>
-                    <a href={`/reports/${report.id}`}>{new Date(report.createdAt).toLocaleDateString()}</a>
-                  </td>
-                  <td>{report.score}</td>
-                  <td>{report.scoreDelta}</td>
-                  <td>{report.newlyDeficientCount}</td>
-                  <td>{report.resolvedCount}</td>
-                  <td>{report.readinessWeeks} weeks</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
+            ))}
+          </tbody>
+        </table>
       )}
     </main>
   );

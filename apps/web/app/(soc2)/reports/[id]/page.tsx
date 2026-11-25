@@ -1,55 +1,71 @@
-import { Pool } from "pg";
+import { notFound } from "next/navigation";
+import { sql } from "@vercel/postgres";
 
-async function getReport(reportId: string): Promise<any> {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) return null;
-  const pool = new Pool({ connectionString: databaseUrl });
-  const report = await pool.query(`SELECT * FROM soc2_gap_reports WHERE id = $1`, [reportId]);
-  const scanId = report.rows[0]?.scan_id;
-  const findings = scanId
-    ? await pool.query(
-        `SELECT title, status, severity, updated_at FROM soc2_findings WHERE scan_id = $1 ORDER BY updated_at DESC`,
-        [scanId],
-      )
-    : { rows: [] };
-  await pool.end();
-  return { report: report.rows[0] ?? null, findings: findings.rows };
-}
+type Report = {
+  id: string;
+  score: number;
+  score_delta: number;
+  newly_deficient_count: number;
+  resolved_count: number;
+  readiness_weeks: number;
+  created_at: string;
+};
+
+type Change = {
+  id: string;
+  change_type: string;
+  previous_status: string | null;
+  current_status: string | null;
+  created_at: string;
+};
 
 export default async function ReportDetailPage({
   params,
 }: {
   params: { id: string };
 }): Promise<JSX.Element> {
-  const data = await getReport(params.id);
+  const report = await sql<Report>`
+    SELECT id, score, score_delta, newly_deficient_count, resolved_count, readiness_weeks, created_at
+    FROM soc2_gap_reports
+    WHERE id = ${params.id}
+    LIMIT 1
+  `;
 
-  if (!data?.report) {
-    return (
-      <main>
-        <h1>Report not found</h1>
-      </main>
-    );
-  }
+  if (report.rowCount === 0) notFound();
 
+  const changes = await sql<Change>`
+    SELECT id, change_type, previous_status, current_status, created_at
+    FROM soc2_gap_report_changes
+    WHERE report_id = ${params.id}
+    ORDER BY created_at DESC
+  `;
+
+  const r = report.rows[0];
   return (
     <main>
-      <h1>Weekly Report Details</h1>
+      <h1>Report details</h1>
       <p>What changed since the prior scan.</p>
-      <section className="card">
-        <p>Score: {data.report.score}</p>
-        <p>Delta: {data.report.score_delta}</p>
-        <p>Newly deficient: {data.report.newly_deficient_count}</p>
-        <p>Resolved: {data.report.resolved_count}</p>
-        <p>Estimated readiness: {data.report.readiness_weeks} weeks</p>
-      </section>
+      <div className="card">
+        <p>Score: {r.score}</p>
+        <p>Delta: {r.score_delta >= 0 ? `+${r.score_delta}` : r.score_delta}</p>
+        <p>Newly deficient: {r.newly_deficient_count}</p>
+        <p>Resolved: {r.resolved_count}</p>
+        <p>Estimated weeks to ready: {r.readiness_weeks}</p>
+      </div>
       <h2>Timeline</h2>
-      <ul>
-        {data.findings.map((f: any, idx: number) => (
-          <li key={`${f.title}-${idx}`}>
-            {new Date(f.updated_at).toLocaleString()} — {f.title} ({f.status}, {f.severity})
-          </li>
-        ))}
-      </ul>
+      {changes.rowCount === 0 ? (
+        <div className="empty">No changes were recorded for this report.</div>
+      ) : (
+        <ul>
+          {changes.rows.map((c) => (
+            <li key={c.id}>
+              <strong>{c.change_type}</strong> ({c.previous_status ?? "unknown"} →{" "}
+              {c.current_status ?? "unknown"}) on{" "}
+              {new Date(c.created_at).toLocaleString()}
+            </li>
+          ))}
+        </ul>
+      )}
     </main>
   );
 }

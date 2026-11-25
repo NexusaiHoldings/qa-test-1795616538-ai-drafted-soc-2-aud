@@ -1,35 +1,29 @@
-import { listRemediationTasks } from "@/lib/soc2/reports/remediation";
+import { getRemediationTasks } from "@/lib/soc2/reports/remediation";
 
 export default async function RemediationPage(): Promise<JSX.Element> {
-  const organizationId = process.env.DEFAULT_ORGANIZATION_ID ?? "";
-  const tasks = organizationId ? await listRemediationTasks(organizationId) : [];
+  const tasks = await getRemediationTasks("00000000-0000-0000-0000-000000000000");
+
   const todo = tasks.filter((t) => t.status === "todo");
-  const progress = tasks.filter((t) => t.status === "in_progress");
+  const inProgress = tasks.filter((t) => t.status === "in_progress");
   const verified = tasks.filter((t) => t.status === "verified");
 
   return (
     <main>
-      <h1>Remediation Tracker</h1>
-      <p>Move work through To do and In progress; Verified only when scan passes.</p>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
-        {[["To do", todo], ["In progress", progress], ["Verified by scan", verified]].map(([label, items]) => (
-          <section key={label} className="card">
-            <h2>{label}</h2>
-            {(items as typeof tasks).length === 0 ? (
-              <p className="muted">No tasks</p>
-            ) : (
-              <ul>
-                {(items as typeof tasks).map((task) => (
-                  <li key={task.id}>
-                    <strong>{task.title}</strong> — {task.severity} — priority {task.priority}
-                    {task.notApplicable ? ` (N/A: ${task.notApplicableReason ?? "reason provided"})` : ""}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        ))}
+      <h1>Remediation tracker</h1>
+      <p>Tasks move to verified only when the next scan passes.</p>
+      <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+        <section>
+          <h2>To do</h2>
+          {todo.length === 0 ? <div className="empty">No tasks.</div> : todo.map((t) => <article key={t.id} className="card"><h3>{t.title}</h3><p>{t.description}</p></article>)}
+        </section>
+        <section>
+          <h2>In progress</h2>
+          {inProgress.length === 0 ? <div className="empty">No tasks.</div> : inProgress.map((t) => <article key={t.id} className="card"><h3>{t.title}</h3><p>{t.description}</p></article>)}
+        </section>
+        <section>
+          <h2>Verified by scan</h2>
+          {verified.length === 0 ? <div className="empty">No tasks.</div> : verified.map((t) => <article key={t.id} className="card"><h3>{t.title}</h3><p>{t.description}</p></article>)}
+        </section>
       </div>
     </main>
   );

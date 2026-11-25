@@ -285,78 +285,22 @@ CREATE INDEX IF NOT EXISTS idx_soc2_remediation_tasks_assignee
 `;
 
 /**
- * SOC 2 grounded policy document generator schema (F1-005).
- *
- * The GENERATIVE layer of the two-layer architecture. Three company-owned tables,
- * all scoped by organization_id:
- *
- *   - soc2_grounding_facts   — the canonical, pre-computed facts table assembled
- *                              from soc2_snapshots + soc2_control_evidence_links.
- *                              ONE facts set per org so all five policies cite
- *                              identical facts (addresses feasibility risk #3,
- *                              long-context cross-document consistency). Each row
- *                              pins a fact to the exact evidence artifact id and
- *                              snapshot that produced it — the LLM may describe a
- *                              fact but never cite an artifact not present here.
- *   - soc2_policy_versions   — one row per generated draft. The gateway (Claude
- *                              Sonnet, JSON-schema output) may only phrase facts
- *                              the deterministic layer already established. Status
- *                              flows draft -> in_review -> approved; an approved
- *                              row auto-flips to 'stale' when a later snapshot
- *                              changes a cited artifact (artifact_hashes in
- *                              content_json no longer match the live sha256).
- *   - soc2_policy_reviews    — the mandatory human sign-off the liability_assessor
- *                              requires before auditor submission. One row per
- *                              approve / request-changes decision.
- *
- * verdict / status columns are free-form text (no CHECK constraint) by house rule;
- * the application layer owns the allowed-value set.
+ * S
  */
-export const SOC2_POLICIES_DDL = `
-CREATE TABLE IF NOT EXISTS soc2_grounding_facts (
+export const SOC2_REPORTING_DDL = `
+CREATE TABLE IF NOT EXISTS soc2_gap_report_changes (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL,
-  policy_type text NOT NULL,
-  fact_key text NOT NULL,
-  fact_text text NOT NULL,
-  artifact_id uuid,
-  snapshot_id uuid,
-  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT soc2_grounding_facts_org_policy_fact_unique UNIQUE (organization_id, policy_type, fact_key)
-);
-CREATE INDEX IF NOT EXISTS idx_soc2_grounding_facts_org
-  ON soc2_grounding_facts (organization_id, policy_type, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS soc2_policy_versions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  organization_id uuid NOT NULL,
-  policy_type text NOT NULL,
-  version integer NOT NULL DEFAULT 1,
-  status text NOT NULL DEFAULT 'draft',
-  title text NOT NULL,
-  content_markdown text NOT NULL DEFAULT '',
-  content_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-  generated_by uuid,
-  approved_at timestamptz,
-  stale_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT soc2_policy_versions_org_type_version_unique UNIQUE (organization_id, policy_type, version)
-);
-CREATE INDEX IF NOT EXISTS idx_soc2_policy_versions_org
-  ON soc2_policy_versions (organization_id, policy_type, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS soc2_policy_reviews (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  organization_id uuid NOT NULL,
-  policy_version_id uuid NOT NULL,
-  reviewer_user_id uuid NOT NULL,
-  decision text NOT NULL,
-  notes text NOT NULL DEFAULT '',
+  report_id uuid NOT NULL,
+  rule_id uuid NOT NULL,
+  change_type text NOT NULL,
+  previous_status text,
+  current_status text,
+  finding_id uuid,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_soc2_policy_reviews_org
-  ON soc2_policy_reviews (organization_id, policy_version_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_soc2_gap_report_changes_report
+  ON soc2_gap_report_changes (report_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_soc2_gap_report_changes_org
+  ON soc2_gap_report_changes (organization_id, created_at DESC);
 `;
