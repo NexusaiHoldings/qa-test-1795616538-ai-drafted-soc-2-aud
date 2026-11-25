@@ -1,26 +1,40 @@
 export type FindingStatus = "compliant" | "deficient" | "not_assessed";
 
-export interface FindingForScore {
-  status: FindingStatus;
-  severity: "critical" | "high" | "medium" | "low" | string;
-}
+export type ScoreInputFinding = {
+  status: string;
+  severity: string;
+};
 
-export interface CoverageScoreResult {
+export type CoverageScoreBreakdown = {
   score: number;
   compliantCount: number;
   deficientCount: number;
   notAssessedCount: number;
   findingsTotal: number;
-}
-
-const SEVERITY_WEIGHTS: Record<string, number> = {
-  critical: 1.0,
-  high: 0.75,
-  medium: 0.5,
-  low: 0.25,
 };
 
-export function computeCoverageScore(findings: FindingForScore[]): CoverageScoreResult {
+const SEVERITY_WEIGHTS: Record<string, number> = {
+  critical: 4,
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+function normalizeStatus(status: string): FindingStatus {
+  if (status === "compliant") {
+    return "compliant";
+  }
+  if (status === "deficient") {
+    return "deficient";
+  }
+  return "not_assessed";
+}
+
+function normalizeSeverity(severity: string): number {
+  return SEVERITY_WEIGHTS[severity] ?? SEVERITY_WEIGHTS.high;
+}
+
+export function computeCoverageScore(findings: ScoreInputFinding[]): CoverageScoreBreakdown {
   if (findings.length === 0) {
     return {
       score: 0,
@@ -34,25 +48,26 @@ export function computeCoverageScore(findings: FindingForScore[]): CoverageScore
   let compliantCount = 0;
   let deficientCount = 0;
   let notAssessedCount = 0;
-  let weightedTotal = 0;
-  let weightedCompliant = 0;
+  let totalWeight = 0;
+  let compliantWeight = 0;
 
   for (const finding of findings) {
-    const severityWeight = SEVERITY_WEIGHTS[finding.severity] ?? SEVERITY_WEIGHTS.high;
-    weightedTotal += severityWeight;
+    const status = normalizeStatus(finding.status);
+    const weight = normalizeSeverity(finding.severity);
 
-    if (finding.status === "compliant") {
+    totalWeight += weight;
+
+    if (status === "compliant") {
       compliantCount += 1;
-      weightedCompliant += severityWeight;
-    } else if (finding.status === "deficient") {
+      compliantWeight += weight;
+    } else if (status === "deficient") {
       deficientCount += 1;
     } else {
       notAssessedCount += 1;
     }
   }
 
-  const normalized = weightedTotal > 0 ? (weightedCompliant / weightedTotal) * 100 : 0;
-  const score = Math.max(0, Math.min(100, Math.round(normalized)));
+  const score = totalWeight > 0 ? Math.max(0, Math.min(100, Math.round((compliantWeight / totalWeight) * 100))) : 0;
 
   return {
     score,

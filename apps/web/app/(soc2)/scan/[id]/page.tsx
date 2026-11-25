@@ -1,110 +1,108 @@
-import { getServerSession } from "@nexus/identity-and-access";
+import Link from "next/link";
 import { sql } from "@vercel/postgres";
-import { getSoc2Access, emitPaywallViewed } from "@/lib/soc2/scan/access";
+import { notFound } from "next/navigation";
+import { requireSoc2ScanAccess } from "@/lib/soc2/scan/access";
 
-interface PageProps {
+type ScanDetailsRow = {
+  id: string;
+  score: number;
+  status: string;
+  compliant_count: number;
+  deficient_count: number;
+  not_assessed_count: number;
+};
+
+type FindingRow = {
+  id: string;
+  status: string;
+  severity: string;
+  title: string;
+  rationale: string;
+  evidence_link: string | null;
+};
+
+export default async function Soc2ScanDetailsPage({
+  params,
+}: {
   params: { id: string };
-}
+}): Promise<JSX.Element> {
+  const access = await requireSoc2ScanAccess();
 
-export default async function ScanDetailPage({ params }: PageProps): Promise<JSX.Element> {
-  const session = await getServerSession();
-  const organizationId = String(session?.organizationId ?? "");
-  const userId = String(session?.user?.id ?? "");
-  const scanId = params.id;
+  const scanResult = await sql<ScanDetailsRow>`
+    SELECT id, score, status, compliant_count, deficient_count, not_assessed_count
+    FROM soc2_gap_scans
+    WHERE id = ${params.id}
+      AND organization_id = ${access.organizationId}
+    LIMIT 1
+  `;
 
-  const [scanRes, findingsRes] = await Promise.all([
-    sql<{
-      id: string;
-      status: string;
-      score: number;
-      compliant_count: number;
-      deficient_count: number;
-      not_assessed_count: number;
-    }>`
-      SELECT id, status, score, compliant_count, deficient_count, not_assessed_count
-      FROM soc2_gap_scans
-      WHERE id = ${scanId}::uuid AND organization_id = ${organizationId}::uuid
-      LIMIT 1
-    `,
-    sql<{
-      id: string;
-      status: string;
-      severity: string;
-      title: string;
-      rationale: string;
-      evidence_link: string | null;
-    }>`
-      SELECT id, status, severity, title, rationale, evidence_link
-      FROM soc2_findings
-      WHERE scan_id = ${scanId}::uuid AND organization_id = ${organizationId}::uuid
-      ORDER BY
-        CASE severity
-          WHEN 'critical' THEN 1
-          WHEN 'high' THEN 2
-          WHEN 'medium' THEN 3
-          ELSE 4
-        END ASC
-    `,
-  ]);
+  const scan = scanResult.rows[0];
+  if (!scan) notFound();
 
-  if (scanRes.rows.length === 0) {
-    return (
-      <main>
-        <h1>Scan not found</h1>
-        <p className="muted">This scan does not exist for your organization.</p>
-      </main>
-    );
-  }
+  const findingsResult = await sql<FindingRow>`
+    SELECT id, status, severity, title, rationale, evidence_link
+    FROM soc2_findings
+    WHERE scan_id = ${scan.id}
+      AND organization_id = ${access.organizationId}
+    ORDER BY
+      CASE severity
+        WHEN 'critical' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3
+        ELSE 4
+      END,
+      created_at DESC
+  `;
 
-  const access = await getSoc2Access(organizationId, userId);
-  const findings = findingsRes.rows;
-  const visibleFindings = access.canSeeFullFindings ? findings : findings.slice(0, access.findingsLimit);
-
-  if (!access.canSeeFullFindings) {
-    await emitPaywallViewed(organizationId, userId, scanId);
-  }
-
-  const scan = scanRes.rows[0];
+  const findings = access.canViewFullFindings ? findingsResult.rows : findingsResult.rows.slice(0, 3);
 
   return (
     <main>
-      <h1>Gap scan results</h1>
-      <p className="muted">Preparatory tool, not an audit opinion.</p>
+      <h1>SOC 2 Scan Results</h1>
+      <p>Severity-weighted coverage score with deterministic evidence mapping.</p>
 
       <div className="card">
-        <h2 style={{ fontSize: "3rem", lineHeight: 1, margin: 0 }}>{scan.score}</h2>
-        <p>Coverage score (0-100)</p>
-        <p className="muted">
-          Compliant: {scan.compliant_count} · Deficient: {scan.deficient_count} · Not assessed: {scan.not_assessed_count}
-        </p>
+        <h2>{scan.score}/100</h2>
+        <p className="muted">Compliant: {scan.compliant_count}</p>
+        <p className="muted">Deficient: {scan.deficient_count}</p>
+        <p className="muted">Not assessed: {scan.not_assessed_count}</p>
       </div>
 
       <h2>Findings</h2>
-      {visibleFindings.length === 0 ? (
-        <div className="empty">No findings available.</div>
+      {findings.length === 0 ? (
+        <div className="empty">
+          <p>No findings for this scan.</p>
+        </div>
       ) : (
         <ul>
-          {visibleFindings.map((finding) => (
+          {findings.map((finding) => (
             <li key={finding.id} className="card">
-              <p>
-                <strong>{finding.title}</strong> — {finding.severity} · {finding.status}
+              <strong>{finding.title}</strong>
+              <p className="muted">
+                {finding.severity} · {finding.status}
               </p>
               <details>
                 <summary>Why</summary>
-                <p>{finding.rationale || "No additional rationale provided."}</p>
+                <p>{finding.rationale}</p>
               </details>
-              {finding.evidence_link ? <p><a href={finding.evidence_link}>Evidence</a></p> : null}
+              {finding.evidence_link ? (
+                <p>
+                  <Link href={finding.evidence_link}>Evidence</Link>
+                </p>
+              ) : null}
             </li>
           ))}
         </ul>
       )}
 
-      {!access.canSeeFullFindings ? (
-        <div className="card" aria-label="locked-section">
-          <p><strong>Locked:</strong> Full findings, policies, and weekly runs.</p>
-          <a className="btn" href="/billing">Unlock the full scan — $2,000/mo flat</a>
+      {!access.canViewFullFindings ? (
+        <div className="card">
+          <h3>Unlock the full scan — $2,000/mo flat</h3>
+          <p className="muted">Get full findings, policy generation, and weekly runs.</p>
         </div>
       ) : null}
+
+      <p className="muted">Preparatory tool, not an audit opinion.</p>
     </main>
   );
 }
