@@ -191,4 +191,46 @@ CREATE INDEX IF NOT EXISTS idx_soc2_control_evidence_links_control
   ON soc2_control_evidence_links (control_id);
 CREATE INDEX IF NOT EXISTS idx_soc2_control_evidence_links_org
   ON soc2_control_evidence_links (organization_id, control_id);
+
+CREATE TABLE IF NOT EXISTS soc2_gap_scans (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  initiated_by uuid,
+  status text NOT NULL DEFAULT 'running',
+  score integer NOT NULL DEFAULT 0,
+  findings_total integer NOT NULL DEFAULT 0,
+  compliant_count integer NOT NULL DEFAULT 0,
+  deficient_count integer NOT NULL DEFAULT 0,
+  not_assessed_count integer NOT NULL DEFAULT 0,
+  summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+  started_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_gap_scans_org_created
+  ON soc2_gap_scans (organization_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS soc2_findings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  scan_id uuid NOT NULL,
+  control_id uuid NOT NULL,
+  rule_id uuid NOT NULL,
+  artifact_id uuid,
+  status text NOT NULL DEFAULT 'not_assessed',
+  severity text NOT NULL DEFAULT 'high',
+  title text NOT NULL,
+  rationale text NOT NULL DEFAULT '',
+  provider text NOT NULL,
+  resource_type text NOT NULL,
+  evidence_link text,
+  raw_excerpt jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_findings_scan
+  ON soc2_findings (scan_id, severity, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_soc2_findings_org
+  ON soc2_findings (organization_id, status, severity);
 `;
