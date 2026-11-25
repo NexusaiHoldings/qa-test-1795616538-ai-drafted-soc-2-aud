@@ -35,4 +35,3 @@ export const DOMAIN_DISPATCH: Record<
   // Build agent appends entries here per CTO-declared new_domain_tool.
   run_control_checks: (ctx, a) => handleRunControlChecks(ctx, a),
 };
-

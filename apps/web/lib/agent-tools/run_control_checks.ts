@@ -1,292 +1,242 @@
 import { createHash } from "node:crypto";
-import { randomUUID } from "node:crypto";
 import type { HandlerContext, HandlerResult } from "@nexus/identity-and-access";
-import { query } from "@/lib/db";
+import { sql } from "@vercel/postgres";
 
-type Args = {
-  organization_id?: string;
-  actor_user_id?: string;
-  reason?: string;
-  confirm?: boolean;
+type Args = Record<string, unknown>;
+
+type RuleRow = {
+  id: string;
+  rule_key: string;
+  title: string;
+  description: string | null;
+  severity: string;
+  enabled: boolean;
+  eval_sql: string;
 };
 
 type SnapshotRow = {
   id: string;
-  organization_id: string;
   source: string;
   snapshot_json: unknown;
-  collected_at: string;
+  captured_at: string;
 };
 
-type RuleRow = {
-  id: string;
-  organization_id: string;
-  control_id: string;
-  title: string;
-  description: string | null;
-  active: boolean;
-  severity: string | null;
-  rule_json: unknown;
-};
-
-type RulePredicate =
-  | { op: "exists"; path: string }
-  | { op: "equals"; path: string; value: unknown }
-  | { op: "not_equals"; path: string; value: unknown }
-  | { op: "in"; path: string; values: unknown[] }
-  | { op: "gte"; path: string; value: number }
-  | { op: "lte"; path: string; value: number };
-
-type RuleSpec = {
-  anyOf?: RulePredicate[];
-  allOf?: RulePredicate[];
-  source?: string;
-};
-
-type FindingInsert = {
-  id: string;
-  organizationId: string;
-  scanId: string;
-  checkRuleId: string;
-  controlId: string;
-  status: "compliant" | "deficient";
-  severity: string;
-  summary: string;
+type EvalResultRow = {
+  status: string;
+  message: string | null;
   evidence: unknown;
 };
 
-function getByPath(input: unknown, path: string): unknown {
-  if (!path) return input;
-  const parts: string[] = path.split(".").filter(Boolean);
-  let current: unknown = input;
-  for (const part of parts) {
-    if (current === null || current === undefined) return undefined;
-    if (Array.isArray(current)) {
-      const idx: number = Number(part);
-      if (Number.isNaN(idx)) return undefined;
-      current = current[idx];
-      continue;
-    }
-    if (typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function evalPredicate(snapshots: SnapshotRow[], predicate: RulePredicate, source?: string): boolean {
-  const scope: SnapshotRow[] = source ? snapshots.filter((s) => s.source === source) : snapshots;
-  for (const snapshot of scope) {
-    const actual: unknown = getByPath(snapshot.snapshot_json, predicate.path);
-    switch (predicate.op) {
-      case "exists":
-        if (actual !== undefined && actual !== null) return true;
-        break;
-      case "equals":
-        if (actual === predicate.value) return true;
-        break;
-      case "not_equals":
-        if (actual !== undefined && actual !== predicate.value) return true;
-        break;
-      case "in":
-        if (predicate.values.some((v) => v === actual)) return true;
-        break;
-      case "gte":
-        if (typeof actual === "number" && actual >= predicate.value) return true;
-        break;
-      case "lte":
-        if (typeof actual === "number" && actual <= predicate.value) return true;
-        break;
-      default:
-        break;
-    }
-  }
-  return false;
+function asUuid(value: unknown): string | null {
+  const v = asString(value);
+  if (!v) return null;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v) ? v : null;
 }
 
-function evaluateRule(snapshots: SnapshotRow[], rule: RuleRow): { status: "compliant" | "deficient"; evidence: unknown } {
-  const spec: RuleSpec = (rule.rule_json ?? {}) as RuleSpec;
-  const anyOf: RulePredicate[] = Array.isArray(spec.anyOf) ? spec.anyOf : [];
-  const allOf: RulePredicate[] = Array.isArray(spec.allOf) ? spec.allOf : [];
-
-  const allOfPass: boolean = allOf.every((p) => evalPredicate(snapshots, p, spec.source));
-  const anyOfPass: boolean = anyOf.length === 0 ? true : anyOf.some((p) => evalPredicate(snapshots, p, spec.source));
-  const pass: boolean = allOfPass && anyOfPass;
-
-  return {
-    status: pass ? "compliant" : "deficient",
-    evidence: {
-      source: spec.source ?? null,
-      allOfEvaluated: allOf.length,
-      anyOfEvaluated: anyOf.length,
-      allOfPass,
-      anyOfPass,
-    },
-  };
-}
-
-function normalizeSeverity(value: string | null): string {
-  const v: string = (value ?? "").toLowerCase();
-  if (v === "low" || v === "medium" || v === "high" || v === "critical") return v;
-  return "medium";
+function stableHash(input: unknown): string {
+  const normalized = JSON.stringify(input ?? null);
+  return createHash("sha256").update(normalized).digest("hex");
 }
 
 export async function handleRunControlChecks(
   ctx: HandlerContext,
   args: Args,
 ): Promise<HandlerResult> {
-  const organizationId: string | undefined = args.organization_id;
-  const confirmed: boolean = args.confirm === true;
+  try {
+    const organizationId =
+      asUuid(args.organization_id) ??
+      asUuid((ctx as { organizationId?: unknown }).organizationId) ??
+      asUuid((ctx as { organization_id?: unknown }).organization_id);
 
-  if (!organizationId) {
-    return {
-      ok: false,
-      error: "invalid_args",
-      message: "organization_id is required",
-    };
-  }
-
-  if (!confirmed) {
-    return {
-      ok: false,
-      error: "confirmation_required",
-      message: "run_control_checks is mutation-class and requires confirm=true",
-    };
-  }
-
-  const actorUserId: string | null =
-    (typeof args.actor_user_id === "string" && args.actor_user_id) ||
-    ((ctx as { userId?: string }).userId ?? null);
-  const reason: string = typeof args.reason === "string" ? args.reason : "manual_or_automated_trigger";
-
-  const snapshotsResult = await query<SnapshotRow>(
-    `
-      SELECT id, organization_id, source, snapshot_json, collected_at
-      FROM soc2_snapshots
-      WHERE organization_id = $1
-      ORDER BY collected_at DESC
-    `,
-    [organizationId],
-  );
-
-  const rulesResult = await query<RuleRow>(
-    `
-      SELECT id, organization_id, control_id, title, description, active, severity, rule_json
-      FROM soc2_check_rules
-      WHERE organization_id = $1
-        AND active = true
-      ORDER BY created_at ASC, id ASC
-    `,
-    [organizationId],
-  );
-
-  const snapshots: SnapshotRow[] = snapshotsResult.rows;
-  const rules: RuleRow[] = rulesResult.rows;
-
-  const findings: FindingInsert[] = [];
-  let compliantCount = 0;
-  let deficientCount = 0;
-
-  for (const rule of rules) {
-    const evaluated = evaluateRule(snapshots, rule);
-    if (evaluated.status === "compliant") {
-      compliantCount += 1;
-    } else {
-      deficientCount += 1;
+    if (!organizationId) {
+      return {
+        ok: false,
+        error: "invalid_args",
+        message: "organization_id is required and must be a UUID",
+      };
     }
 
-    findings.push({
-      id: randomUUID(),
-      organizationId,
-      scanId: "",
-      checkRuleId: rule.id,
-      controlId: rule.control_id,
-      status: evaluated.status,
-      severity: normalizeSeverity(rule.severity),
-      summary:
-        evaluated.status === "compliant"
-          ? `Control ${rule.control_id} satisfied by deterministic checks`
-          : `Control ${rule.control_id} failed deterministic checks`,
-      evidence: {
-        ...evaluated.evidence,
-        snapshotCount: snapshots.length,
-        ruleTitle: rule.title,
-      },
-    });
-  }
+    const actorUserId =
+      asUuid(args.actor_user_id) ??
+      asUuid((ctx as { userId?: unknown }).userId) ??
+      asUuid((ctx as { user_id?: unknown }).user_id);
 
-  const scanSummary = {
-    organizationId,
-    totalRules: rules.length,
-    snapshotsEvaluated: snapshots.length,
-    compliantCount,
-    deficientCount,
-    reason,
-    triggeredBy: actorUserId,
-  };
+    const snapshotsResult = await sql<SnapshotRow>`
+      select id, source, snapshot_json, captured_at
+      from soc2_snapshots
+      where organization_id = ${organizationId}
+      order by captured_at desc
+      limit 25
+    `;
 
-  const contentHash: string = createHash("sha256")
-    .update(JSON.stringify(scanSummary))
-    .digest("hex");
+    if (snapshotsResult.rowCount === 0) {
+      return {
+        ok: true,
+        data: {
+          organization_id: organizationId,
+          scan_id: null,
+          findings_created: 0,
+          summary: {
+            compliant: 0,
+            deficient: 0,
+            not_applicable: 0,
+            error: 0,
+          },
+          message: "No snapshots available; control checks skipped.",
+        },
+      };
+    }
 
-  const scanId: string = randomUUID();
+    const rulesResult = await sql<RuleRow>`
+      select id, rule_key, title, description, severity, enabled, eval_sql
+      from soc2_check_rules
+      where organization_id = ${organizationId}
+        and enabled = true
+      order by rule_key asc
+    `;
 
-  await query(
-    `
-      INSERT INTO soc2_gap_scans (
-        id,
+    const scanStatus = "completed";
+    const nowIso = new Date().toISOString();
+    const scanInsert = await sql<{ id: string }>`
+      insert into soc2_gap_scans (
         organization_id,
-        actor_user_id,
-        reason,
         status,
-        summary_json,
-        summary_sha256
+        started_at,
+        completed_at,
+        trigger_source,
+        triggered_by_user_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
-    `,
-    [scanId, organizationId, actorUserId, reason, "completed", JSON.stringify(scanSummary), contentHash],
-  );
+      values (
+        ${organizationId},
+        ${scanStatus},
+        ${nowIso},
+        ${nowIso},
+        ${"agent_tool_run_control_checks"},
+        ${actorUserId}
+      )
+      returning id
+    `;
 
-  for (const finding of findings) {
-    finding.scanId = scanId;
-    await query(
-      `
-        INSERT INTO soc2_findings (
-          id,
+    const scanId = scanInsert.rows[0]?.id;
+    if (!scanId) {
+      return {
+        ok: false,
+        error: "scan_insert_failed",
+        message: "Failed to create soc2_gap_scans row",
+      };
+    }
+
+    let compliant = 0;
+    let deficient = 0;
+    let notApplicable = 0;
+    let errored = 0;
+    let findingsCreated = 0;
+
+    for (const rule of rulesResult.rows) {
+      let status = "error";
+      let message = "Rule evaluation failed";
+      let evidence: unknown = null;
+
+      try {
+        const evalRows = await sql<EvalResultRow>.unsafe(
+          rule.eval_sql,
+          [organizationId],
+        );
+        const first = evalRows.rows[0];
+
+        if (first?.status) {
+          status = String(first.status);
+        }
+        if (first?.message !== undefined && first?.message !== null) {
+          message = String(first.message);
+        } else if (status === "compliant") {
+          message = "Control is compliant";
+        } else if (status === "deficient") {
+          message = "Control is deficient";
+        } else if (status === "not_applicable") {
+          message = "Control is not applicable";
+        }
+        evidence = first?.evidence ?? null;
+      } catch (error: unknown) {
+        status = "error";
+        message =
+          error instanceof Error ? error.message.slice(0, 1000) : "Unknown evaluation error";
+        evidence = null;
+      }
+
+      if (status === "compliant") compliant += 1;
+      else if (status === "deficient") deficient += 1;
+      else if (status === "not_applicable") notApplicable += 1;
+      else errored += 1;
+
+      const evidenceHash = stableHash(evidence);
+
+      await sql`
+        insert into soc2_findings (
           organization_id,
           scan_id,
-          check_rule_id,
-          control_id,
-          status,
+          rule_id,
+          rule_key,
+          title,
           severity,
+          status,
           summary,
-          evidence_json
+          detail,
+          evidence_json,
+          evidence_hash
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
-      `,
-      [
-        finding.id,
-        finding.organizationId,
-        finding.scanId,
-        finding.checkRuleId,
-        finding.controlId,
-        finding.status,
-        finding.severity,
-        finding.summary,
-        JSON.stringify(finding.evidence),
-      ],
-    );
-  }
+        values (
+          ${organizationId},
+          ${scanId},
+          ${rule.id},
+          ${rule.rule_key},
+          ${rule.title},
+          ${rule.severity},
+          ${status},
+          ${message},
+          ${rule.description},
+          ${evidence as never},
+          ${evidenceHash}
+        )
+      `;
+      findingsCreated += 1;
+    }
 
-  return {
-    ok: true,
-    data: {
-      scan_id: scanId,
-      organization_id: organizationId,
-      total_rules: rules.length,
-      compliant_count: compliantCount,
-      deficient_count: deficientCount,
-      findings_created: findings.length,
-      summary_sha256: contentHash,
-    },
-  };
+    await sql`
+      update soc2_gap_scans
+      set summary_json = ${{
+        compliant,
+        deficient,
+        not_applicable: notApplicable,
+        error: errored,
+      } as never},
+      findings_count = ${findingsCreated}
+      where id = ${scanId}
+    `;
+
+    return {
+      ok: true,
+      data: {
+        organization_id: organizationId,
+        scan_id: scanId,
+        findings_created: findingsCreated,
+        summary: {
+          compliant,
+          deficient,
+          not_applicable: notApplicable,
+          error: errored,
+        },
+      },
+    };
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: "run_control_checks_failed",
+      message: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
 }
