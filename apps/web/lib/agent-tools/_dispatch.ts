@@ -24,6 +24,7 @@
  */
 
 import type { HandlerContext, HandlerResult } from "@nexus/identity-and-access";
+import { handleGenerateGroundedPolicy } from "./generate_grounded_policy";
 import { handleRunControlChecks } from "./run_control_checks";
 
 type Args = Record<string, unknown>;
@@ -34,4 +35,5 @@ export const DOMAIN_DISPATCH: Record<
 > = {
   // Build agent appends entries here per CTO-declared new_domain_tool.
   run_control_checks: (ctx, a) => handleRunControlChecks(ctx, a),
+  generate_grounded_policy: (ctx, a) => handleGenerateGroundedPolicy(ctx, a),
 };
