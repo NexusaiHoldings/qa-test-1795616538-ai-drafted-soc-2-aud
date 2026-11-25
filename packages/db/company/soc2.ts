@@ -287,20 +287,85 @@ CREATE INDEX IF NOT EXISTS idx_soc2_remediation_tasks_assignee
 /**
  * S
  */
-export const SOC2_REPORTING_DDL = `
-CREATE TABLE IF NOT EXISTS soc2_gap_report_changes (
+export const SOC2_EVIDENCE_PACKAGES_DDL = `
+CREATE TABLE IF NOT EXISTS soc2_policy_reviews (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL,
-  report_id uuid NOT NULL,
-  rule_id uuid NOT NULL,
-  change_type text NOT NULL,
-  previous_status text,
-  current_status text,
-  finding_id uuid,
-  created_at timestamptz NOT NULL DEFAULT now()
+  policy_key text NOT NULL,
+  policy_title text NOT NULL,
+  policy_version text NOT NULL DEFAULT 'v1',
+  pdf_file_id text,
+  status text NOT NULL DEFAULT 'draft',
+  reviewed_by uuid,
+  reviewed_at timestamptz,
+  notes text NOT NULL DEFAULT '',
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT soc2_policy_reviews_org_key_version_unique UNIQUE (organization_id, policy_key, policy_version)
 );
-CREATE INDEX IF NOT EXISTS idx_soc2_gap_report_changes_report
-  ON soc2_gap_report_changes (report_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_soc2_gap_report_changes_org
-  ON soc2_gap_report_changes (organization_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_soc2_policy_reviews_org_status
+  ON soc2_policy_reviews (organization_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS soc2_evidence_packages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  created_by uuid,
+  name text NOT NULL,
+  status text NOT NULL DEFAULT 'draft',
+  include_policies boolean NOT NULL DEFAULT true,
+  include_control_evidence_json boolean NOT NULL DEFAULT true,
+  include_control_matrix_csv boolean NOT NULL DEFAULT true,
+  include_latest_gap_report boolean NOT NULL DEFAULT true,
+  include_disclaimer boolean NOT NULL DEFAULT true,
+  checklist jsonb NOT NULL DEFAULT '{}'::jsonb,
+  zip_file_id text,
+  zip_sha256 text,
+  zip_bytes bigint NOT NULL DEFAULT 0,
+  generated_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_evidence_packages_org_created
+  ON soc2_evidence_packages (organization_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS soc2_package_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  package_id uuid NOT NULL,
+  item_type text NOT NULL,
+  path text NOT NULL,
+  source_table text NOT NULL,
+  source_id text,
+  hash_sha256 text,
+  bytes bigint NOT NULL DEFAULT 0,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  included boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT soc2_package_items_org_package_path_unique UNIQUE (organization_id, package_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_package_items_package
+  ON soc2_package_items (package_id, item_type, created_at);
+
+CREATE TABLE IF NOT EXISTS soc2_audit_room_grants (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  package_id uuid NOT NULL,
+  token text NOT NULL,
+  auditor_email text NOT NULL,
+  auditor_name text,
+  status text NOT NULL DEFAULT 'active',
+  expires_at timestamptz NOT NULL,
+  created_by uuid,
+  revoked_by uuid,
+  revoked_at timestamptz,
+  last_accessed_at timestamptz,
+  access_count integer NOT NULL DEFAULT 0,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT soc2_audit_room_grants_token_unique UNIQUE (token)
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_audit_room_grants_org
+  ON soc2_audit_room_grants (organization_id, status, expires_at);
 `;
