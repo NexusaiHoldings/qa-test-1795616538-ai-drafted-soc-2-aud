@@ -233,6 +233,55 @@ CREATE INDEX IF NOT EXISTS idx_soc2_findings_scan
   ON soc2_findings (scan_id, severity, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_soc2_findings_org
   ON soc2_findings (organization_id, status, severity);
+
+CREATE TABLE IF NOT EXISTS soc2_gap_reports (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  scan_id uuid NOT NULL,
+  previous_scan_id uuid,
+  score integer NOT NULL DEFAULT 0,
+  previous_score integer NOT NULL DEFAULT 0,
+  score_delta integer NOT NULL DEFAULT 0,
+  newly_deficient_count integer NOT NULL DEFAULT 0,
+  resolved_count integer NOT NULL DEFAULT 0,
+  summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+  readiness_weeks integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_gap_reports_org_created
+  ON soc2_gap_reports (organization_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_soc2_gap_reports_scan
+  ON soc2_gap_reports (scan_id);
+
+CREATE TABLE IF NOT EXISTS soc2_remediation_tasks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  control_id uuid NOT NULL,
+  rule_id uuid NOT NULL,
+  finding_id uuid,
+  title text NOT NULL,
+  description text NOT NULL DEFAULT '',
+  severity text NOT NULL DEFAULT 'high',
+  priority integer NOT NULL DEFAULT 100,
+  status text NOT NULL DEFAULT 'todo',
+  assignee_user_id uuid,
+  due_at timestamptz,
+  last_deficient_scan_id uuid,
+  verified_scan_id uuid,
+  not_applicable boolean NOT NULL DEFAULT false,
+  not_applicable_reason text,
+  not_applicable_marked_by uuid,
+  not_applicable_marked_at timestamptz,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT soc2_remediation_tasks_org_rule_unique UNIQUE (organization_id, rule_id)
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_remediation_tasks_org_status
+  ON soc2_remediation_tasks (organization_id, status, priority, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_soc2_remediation_tasks_assignee
+  ON soc2_remediation_tasks (organization_id, assignee_user_id, updated_at DESC);
 `;
 
 /**
@@ -268,57 +317,46 @@ CREATE TABLE IF NOT EXISTS soc2_grounding_facts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL,
   policy_type text NOT NULL,
-  artifact_id uuid,
-  control_ref text,
   fact_key text NOT NULL,
-  fact_value jsonb NOT NULL DEFAULT '{}'::jsonb,
+  fact_text text NOT NULL,
+  artifact_id uuid,
   snapshot_id uuid,
-  sha256 text,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT soc2_grounding_facts_unique UNIQUE (organization_id, policy_type, artifact_id, fact_key)
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT soc2_grounding_facts_org_policy_fact_unique UNIQUE (organization_id, policy_type, fact_key)
 );
 CREATE INDEX IF NOT EXISTS idx_soc2_grounding_facts_org
-  ON soc2_grounding_facts (organization_id, policy_type);
-CREATE INDEX IF NOT EXISTS idx_soc2_grounding_facts_artifact
-  ON soc2_grounding_facts (artifact_id);
+  ON soc2_grounding_facts (organization_id, policy_type, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS soc2_policy_versions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL,
   policy_type text NOT NULL,
-  version_number integer NOT NULL DEFAULT 1,
+  version integer NOT NULL DEFAULT 1,
   status text NOT NULL DEFAULT 'draft',
   title text NOT NULL,
-  summary text NOT NULL DEFAULT '',
+  content_markdown text NOT NULL DEFAULT '',
   content_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-  content_hash text NOT NULL,
-  cited_artifact_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
-  snapshot_id uuid,
-  generation_reason text,
-  requested_by_user_id uuid,
-  reviewed_by uuid,
-  reviewed_at timestamptz,
+  generated_by uuid,
   approved_at timestamptz,
   stale_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT soc2_policy_versions_org_type_version_unique UNIQUE (organization_id, policy_type, version)
 );
 CREATE INDEX IF NOT EXISTS idx_soc2_policy_versions_org
   ON soc2_policy_versions (organization_id, policy_type, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_soc2_policy_versions_status
-  ON soc2_policy_versions (organization_id, status);
 
 CREATE TABLE IF NOT EXISTS soc2_policy_reviews (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL,
   policy_version_id uuid NOT NULL,
-  reviewer_user_id uuid,
+  reviewer_user_id uuid NOT NULL,
   decision text NOT NULL,
-  note text NOT NULL DEFAULT '',
+  notes text NOT NULL DEFAULT '',
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_soc2_policy_reviews_version
-  ON soc2_policy_reviews (policy_version_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_soc2_policy_reviews_org
-  ON soc2_policy_reviews (organization_id, created_at DESC);
+  ON soc2_policy_reviews (organization_id, policy_version_id, created_at DESC);
 `;
