@@ -234,3 +234,91 @@ CREATE INDEX IF NOT EXISTS idx_soc2_findings_scan
 CREATE INDEX IF NOT EXISTS idx_soc2_findings_org
   ON soc2_findings (organization_id, status, severity);
 `;
+
+/**
+ * SOC 2 grounded policy document generator schema (F1-005).
+ *
+ * The GENERATIVE layer of the two-layer architecture. Three company-owned tables,
+ * all scoped by organization_id:
+ *
+ *   - soc2_grounding_facts   — the canonical, pre-computed facts table assembled
+ *                              from soc2_snapshots + soc2_control_evidence_links.
+ *                              ONE facts set per org so all five policies cite
+ *                              identical facts (addresses feasibility risk #3,
+ *                              long-context cross-document consistency). Each row
+ *                              pins a fact to the exact evidence artifact id and
+ *                              snapshot that produced it — the LLM may describe a
+ *                              fact but never cite an artifact not present here.
+ *   - soc2_policy_versions   — one row per generated draft. The gateway (Claude
+ *                              Sonnet, JSON-schema output) may only phrase facts
+ *                              the deterministic layer already established. Status
+ *                              flows draft -> in_review -> approved; an approved
+ *                              row auto-flips to 'stale' when a later snapshot
+ *                              changes a cited artifact (artifact_hashes in
+ *                              content_json no longer match the live sha256).
+ *   - soc2_policy_reviews    — the mandatory human sign-off the liability_assessor
+ *                              requires before auditor submission. One row per
+ *                              approve / request-changes decision.
+ *
+ * verdict / status columns are free-form text (no CHECK constraint) by house rule;
+ * the application layer owns the allowed-value set.
+ */
+export const SOC2_POLICIES_DDL = `
+CREATE TABLE IF NOT EXISTS soc2_grounding_facts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  policy_type text NOT NULL,
+  artifact_id uuid,
+  control_ref text,
+  fact_key text NOT NULL,
+  fact_value jsonb NOT NULL DEFAULT '{}'::jsonb,
+  snapshot_id uuid,
+  sha256 text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT soc2_grounding_facts_unique UNIQUE (organization_id, policy_type, artifact_id, fact_key)
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_grounding_facts_org
+  ON soc2_grounding_facts (organization_id, policy_type);
+CREATE INDEX IF NOT EXISTS idx_soc2_grounding_facts_artifact
+  ON soc2_grounding_facts (artifact_id);
+
+CREATE TABLE IF NOT EXISTS soc2_policy_versions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  policy_type text NOT NULL,
+  version_number integer NOT NULL DEFAULT 1,
+  status text NOT NULL DEFAULT 'draft',
+  title text NOT NULL,
+  summary text NOT NULL DEFAULT '',
+  content_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  content_hash text NOT NULL,
+  cited_artifact_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+  snapshot_id uuid,
+  generation_reason text,
+  requested_by_user_id uuid,
+  reviewed_by uuid,
+  reviewed_at timestamptz,
+  approved_at timestamptz,
+  stale_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_policy_versions_org
+  ON soc2_policy_versions (organization_id, policy_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_soc2_policy_versions_status
+  ON soc2_policy_versions (organization_id, status);
+
+CREATE TABLE IF NOT EXISTS soc2_policy_reviews (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id uuid NOT NULL,
+  policy_version_id uuid NOT NULL,
+  reviewer_user_id uuid,
+  decision text NOT NULL,
+  note text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_soc2_policy_reviews_version
+  ON soc2_policy_reviews (policy_version_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_soc2_policy_reviews_org
+  ON soc2_policy_reviews (organization_id, created_at DESC);
+`;
